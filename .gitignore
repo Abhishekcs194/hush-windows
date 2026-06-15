@@ -1,0 +1,7 @@
+/target
+Cargo.lock
+*.pdb
+*.exp
+*.lib
+assets/icon_generated.png
+.env
