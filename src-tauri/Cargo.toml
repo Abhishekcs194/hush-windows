@@ -2,37 +2,39 @@
 name = "hush-windows"
 version = "0.1.0"
 edition = "2021"
-description = "System-wide voice dictation for Windows — on-device Whisper + optional AI polish"
-authors = ["Abhishekcs194"]
+description = "System-wide voice dictation for Windows"
 
-[[bin]]
-name = "hush-windows"
-path = "src/main.rs"
+[lib]
+name = "hush_windows_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# Audio capture — WASAPI backend on Windows
+# Tauri core
+tauri = { version = "2", features = ["tray-icon", "image-ico", "image-png"] }
+tauri-plugin-shell = "2"
+
+# Audio capture — WASAPI on Windows
 cpal = "0.15"
 
-# On-device Whisper inference via whisper.cpp
+# On-device Whisper
 whisper-rs = "0.11"
 
-# Global hotkey registration (RegisterHotKey + WM_HOTKEY)
+# Global hotkey (more control than tauri-plugin-global-shortcut for bare-key presses)
 global-hotkey = "0.5"
-
-# UI framework: egui with multi-viewport (bubble + settings as separate windows)
-eframe = { version = "0.28", features = ["wgpu", "default_fonts", "wayland", "x11"] }
-egui = "0.28"
-
-# System tray (Shell_NotifyIcon wrapper)
-tray-icon = "0.14"
 
 # Text injection
 enigo = "0.2"
 
-# Cross-platform clipboard
+# Clipboard
 arboard = "3"
 
-# Windows API: foreground window, SendInput, Credential Manager
+# Open browser for auth
+open = "5"
+
+# Windows API
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -45,13 +47,13 @@ windows = { version = "0.58", features = [
     "Win32_UI_Accessibility",
 ] }
 
-# HTTP client for Groq API
+# HTTP for Groq API
 reqwest = { version = "0.12", features = ["json"] }
 
-# Async runtime for Whisper tasks and API calls
+# Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# Credential storage (wraps Windows Credential Manager)
+# Credential storage
 keyring = "2"
 
 # Serialization
@@ -67,11 +69,6 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 crossbeam-channel = "0.5"
 dirs = "5"
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-[build-dependencies]
-# Embeds app icon and sets Windows subsystem on release builds
-winres = "0.1"
 
 [profile.release]
 opt-level = 3

@@ -1,7 +1,18 @@
-/target
-Cargo.lock
+# Rust
+/src-tauri/target
+src-tauri/Cargo.lock
 *.pdb
 *.exp
 *.lib
-assets/icon_generated.png
+
+# Node
+node_modules
+dist
+dist-ssr
+
+# Tauri generated
+src-tauri/gen
+
+# Misc
 .env
+assets/icon_generated.png
