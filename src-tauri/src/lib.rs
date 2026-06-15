@@ -21,9 +21,8 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager,
+    Emitter, Listener, Manager,
 };
-use transcriber::Transcriber;
 
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -48,6 +47,7 @@ pub fn run() {
             commands::get_history,
             commands::clear_history,
             commands::get_auth_state,
+            commands::sign_in_with_key,
             commands::sign_out,
             commands::open_sign_in,
             commands::get_audio_devices,
@@ -115,23 +115,6 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
             }
         })
         .build(app)?;
-
-    // ── Load Whisper model in background ───────────────────────────────────
-    {
-        let state = app.state::<AppState>();
-        let tr = Arc::clone(&state.transcriber);
-        let emit_handle = handle.clone();
-        state.rt.spawn(async move {
-            match Transcriber::new().await {
-                Ok(t) => {
-                    *tr.lock().await = Some(t);
-                    log::info!("Transcriber ready");
-                    let _ = emit_handle.emit("transcriber-ready", ());
-                }
-                Err(e) => log::error!("Failed to load Whisper model: {}", e),
-            }
-        });
-    }
 
     // ── Hotkey listener ────────────────────────────────────────────────────
     {
@@ -252,7 +235,6 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                             continue;
                         }
 
-                        let tr = Arc::clone(&bridge_transcriber);
                         let auth = Arc::clone(&bridge_auth);
                         let history = Arc::clone(&bridge_history);
                         let settings_snap = bridge_settings.lock().unwrap().clone();
@@ -318,20 +300,18 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                         });
                     }
                     Ok(AudioEvent::Chunk(chunk)) => {
-                        // Transcribe chunk
                         let tr = Arc::clone(&bridge_transcriber);
                         let segs = Arc::clone(&bridge_segments);
+                        let auth = Arc::clone(&bridge_auth);
                         let pause = chunk.pause_before_secs;
                         bridge_rt.spawn(async move {
-                            let guard = tr.lock().await;
-                            if let Some(t) = guard.as_ref() {
-                                match t.transcribe(&chunk.samples, chunk.sample_rate, pause).await {
-                                    Ok(seg) if !seg.text.is_empty() => {
-                                        segs.lock().unwrap().push(seg);
-                                    }
-                                    Err(e) => log::warn!("Transcription error: {}", e),
-                                    _ => {}
+                            let Some(key) = auth.token() else { return };
+                            match tr.transcribe(&chunk.samples, chunk.sample_rate, pause, &key).await {
+                                Ok(seg) if !seg.text.is_empty() => {
+                                    segs.lock().unwrap().push(seg);
                                 }
+                                Err(e) => log::warn!("Transcription error: {}", e),
+                                _ => {}
                             }
                         });
                     }

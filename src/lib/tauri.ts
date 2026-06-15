@@ -11,7 +11,6 @@ export interface Settings {
 
 export interface AuthInfo {
   signed_in: boolean;
-  pair_url: string;
 }
 
 export interface HistoryEntry {
@@ -36,6 +35,9 @@ export const clearHistory = (): Promise<void> =>
 
 export const getAuthState = (): Promise<AuthInfo> =>
   invoke("get_auth_state");
+
+export const signInWithKey = (apiKey: string): Promise<void> =>
+  invoke("sign_in_with_key", { apiKey });
 
 export const signOut = (): Promise<void> =>
   invoke("sign_out");

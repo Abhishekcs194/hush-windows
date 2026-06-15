@@ -19,9 +19,6 @@ tauri-plugin-shell = "2"
 # Audio capture — WASAPI on Windows
 cpal = "0.15"
 
-# On-device Whisper
-whisper-rs = "0.11"
-
 # Global hotkey (more control than tauri-plugin-global-shortcut for bare-key presses)
 global-hotkey = "0.5"
 
@@ -48,7 +45,7 @@ windows = { version = "0.58", features = [
 ] }
 
 # HTTP for Groq API
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

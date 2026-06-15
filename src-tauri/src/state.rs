@@ -4,7 +4,7 @@ use crate::auth::AuthStore;
 use crate::history::History;
 use crate::hotkey::HotkeyChoice;
 use crate::polisher::CleanupLevel;
-use crate::transcriber::{TranscriptionSegment, Transcriber};
+use crate::transcriber::{Transcriber, TranscriptionSegment};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -66,7 +66,7 @@ pub struct AppState {
     pub auth: Arc<AuthStore>,
     pub history: Arc<Mutex<History>>,
     pub settings: Arc<Mutex<Settings>>,
-    pub transcriber: Arc<tokio::sync::Mutex<Option<Transcriber>>>,
+    pub transcriber: Arc<Transcriber>,
     pub recording_state: Arc<Mutex<RecordingState>>,
     pub pending_segments: Arc<Mutex<Vec<TranscriptionSegment>>>,
     pub rt: tokio::runtime::Handle,
@@ -78,7 +78,7 @@ impl AppState {
             auth: Arc::new(AuthStore::new()),
             history: Arc::new(Mutex::new(History::load())),
             settings: Arc::new(Mutex::new(Settings::load())),
-            transcriber: Arc::new(tokio::sync::Mutex::new(None)),
+            transcriber: Arc::new(Transcriber::new()),
             recording_state: Arc::new(Mutex::new(RecordingState::Idle)),
             pending_segments: Arc::new(Mutex::new(Vec::new())),
             rt,

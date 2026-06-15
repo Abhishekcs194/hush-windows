@@ -13,7 +13,7 @@ use windows::Win32::{
     },
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InjectionMethod {
     Clipboard,
     DirectType,

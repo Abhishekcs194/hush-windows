@@ -95,7 +95,7 @@ pub fn capture() -> AppContext {
 fn capture_windows() -> AppContext {
     unsafe {
         let hwnd: HWND = GetForegroundWindow();
-        if hwnd.0 == 0 {
+        if hwnd.0.is_null() {
             return AppContext::unknown();
         }
 

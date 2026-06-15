@@ -49,7 +49,7 @@ impl AuthStore {
 
     pub fn sign_out(&self) {
         if let Ok(entry) = keyring::Entry::new(SERVICE, ACCOUNT) {
-            let _ = entry.delete_credential();
+            let _ = entry.delete_password();
         }
         *self.state.lock().unwrap() = AuthState::SignedOut;
         log::info!("Signed out, token removed from Credential Manager");

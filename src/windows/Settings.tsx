@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Mic, Keyboard, User, Info, Zap } from "lucide-react";
+import { Keyboard, User, Info, Zap } from "lucide-react";
 import {
   getSettings,
   saveSettings,
   getAuthState,
   getAudioDevices,
   openSignIn,
+  signInWithKey,
   signOut,
   Settings,
   AuthInfo,
@@ -115,7 +116,11 @@ export default function SettingsWindow() {
               <HotkeyTab settings={settings} update={update} />
             )}
             {tab === "account" && auth && (
-              <AccountTab auth={auth} onSignIn={openSignIn} onSignOut={() => { signOut(); setAuth({ ...auth, signed_in: false }); }} />
+              <AccountTab
+                auth={auth}
+                onSignOut={() => { signOut(); setAuth({ ...auth, signed_in: false }); }}
+                onKeySet={() => setAuth({ ...auth, signed_in: true })}
+              />
             )}
             {tab === "about" && <AboutTab />}
           </motion.div>
@@ -219,11 +224,30 @@ function HotkeyTab({ settings, update }: {
   );
 }
 
-function AccountTab({ auth, onSignIn, onSignOut }: {
+function AccountTab({ auth, onSignOut, onKeySet }: {
   auth: AuthInfo;
-  onSignIn: () => void;
   onSignOut: () => void;
+  onKeySet: () => void;
 }) {
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSaveKey = async () => {
+    if (!key.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      await signInWithKey(key.trim());
+      setKey("");
+      onKeySet();
+    } catch (e: any) {
+      setError(e?.toString() ?? "Failed to save key");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <h2 className="text-base font-semibold">Account</h2>
@@ -233,11 +257,11 @@ function AccountTab({ auth, onSignIn, onSignOut }: {
           <>
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full bg-accent flex items-center justify-center text-white text-sm font-semibold">
-                H
+                G
               </div>
               <div>
-                <div className="text-sm font-medium">Signed in</div>
-                <div className="text-xs text-zinc-500">AI cleanup is enabled</div>
+                <div className="text-sm font-medium">Groq API key saved</div>
+                <div className="text-xs text-zinc-500">Transcription &amp; AI cleanup enabled</div>
               </div>
             </div>
             <button
@@ -245,21 +269,42 @@ function AccountTab({ auth, onSignIn, onSignOut }: {
               className="w-full py-2 rounded-lg border border-border text-sm text-zinc-300
                          hover:bg-surface-overlay transition-colors"
             >
-              Sign Out
+              Remove Key
             </button>
           </>
         ) : (
           <>
-            <div className="text-sm text-zinc-400">
-              Sign in to enable AI cleanup (Stage 2 polish). Your audio is processed on-device — only the text is sent to the cloud for grammar correction.
+            <p className="text-sm text-zinc-400">
+              Hush uses the Groq API for fast transcription and AI text cleanup.
+              Get a free API key at{" "}
+              <button
+                onClick={() => openSignIn()}
+                className="text-accent hover:underline"
+              >
+                console.groq.com/keys
+              </button>
+            </p>
+            <div className="space-y-2">
+              <input
+                type="password"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSaveKey()}
+                placeholder="gsk_…"
+                className="w-full bg-surface-overlay border border-border rounded-lg px-3 py-2
+                           text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none
+                           focus:ring-1 focus:ring-accent font-mono"
+              />
+              {error && <p className="text-xs text-red-400">{error}</p>}
+              <button
+                onClick={handleSaveKey}
+                disabled={saving || !key.trim()}
+                className="w-full py-2 rounded-lg bg-accent hover:bg-pink-500 text-white text-sm
+                           font-medium transition-colors disabled:opacity-50"
+              >
+                {saving ? "Saving…" : "Save API Key"}
+              </button>
             </div>
-            <button
-              onClick={onSignIn}
-              className="w-full py-2 rounded-lg bg-accent hover:bg-pink-500 text-white text-sm
-                         font-medium transition-colors"
-            >
-              Sign In via Browser
-            </button>
           </>
         )}
       </div>
