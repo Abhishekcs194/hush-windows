@@ -19,9 +19,6 @@ tauri-plugin-shell = "2"
 # Audio capture — WASAPI on Windows
 cpal = "0.15"
 
-# Global hotkey (more control than tauri-plugin-global-shortcut for bare-key presses)
-global-hotkey = "0.5"
-
 # Text injection
 enigo = "0.2"
 

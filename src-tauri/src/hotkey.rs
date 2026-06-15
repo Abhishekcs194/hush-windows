@@ -1,9 +1,8 @@
-use global_hotkey::{
-    hotkey::{Code, HotKey, Modifiers},
-    GlobalHotKeyEvent, GlobalHotKeyManager,
-};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VIRTUAL_KEY, VK_CAPITAL, VK_F13, VK_F14, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
+};
 
 const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(300);
 
@@ -29,14 +28,14 @@ impl HotkeyChoice {
         }
     }
 
-    fn to_code(&self) -> Code {
+    fn vk(self) -> VIRTUAL_KEY {
         match self {
-            Self::RightAlt => Code::AltRight,
-            Self::RightCtrl => Code::ControlRight,
-            Self::RightShift => Code::ShiftRight,
-            Self::CapsLock => Code::CapsLock,
-            Self::F13 => Code::F13,
-            Self::F14 => Code::F14,
+            Self::RightAlt => VK_RMENU,
+            Self::RightCtrl => VK_RCONTROL,
+            Self::RightShift => VK_RSHIFT,
+            Self::CapsLock => VK_CAPITAL,
+            Self::F13 => VK_F13,
+            Self::F14 => VK_F14,
         }
     }
 }
@@ -49,88 +48,63 @@ impl Default for HotkeyChoice {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HotkeyEvent {
-    /// User pressed and held — start recording
+    /// Key pressed down — start recording
     HoldStart,
-    /// User released after hold — stop recording
+    /// Key released — stop recording
     HoldEnd,
-    /// User double-tapped — toggle hands-free mode
+    /// Double-tapped within 300ms — toggle hands-free
     DoubleTap,
 }
 
 pub struct HotkeyManager {
-    manager: GlobalHotKeyManager,
-    hotkey: HotKey,
-    hotkey_id: u32,
+    vk: VIRTUAL_KEY,
     choice: HotkeyChoice,
     last_press: Option<Instant>,
-    press_count: u32,
-    is_held: bool,
+    was_pressed: bool,
 }
 
 impl HotkeyManager {
     pub fn new(choice: HotkeyChoice) -> anyhow::Result<Self> {
-        let manager = GlobalHotKeyManager::new()?;
-        let hotkey = HotKey::new(None, choice.to_code());
-        let hotkey_id = hotkey.id();
-        manager.register(hotkey)?;
         Ok(Self {
-            manager,
-            hotkey,
-            hotkey_id,
+            vk: choice.vk(),
             choice,
             last_press: None,
-            press_count: 0,
-            is_held: false,
+            was_pressed: false,
         })
     }
 
-    /// Call this every frame from the egui update loop.
-    /// Returns Some(HotkeyEvent) if something actionable happened.
+    /// Poll key state. Call every 5–10ms from a background thread.
     pub fn poll(&mut self) -> Option<HotkeyEvent> {
-        use global_hotkey::HotKeyState;
+        // Bit 15 of GetAsyncKeyState = key is currently down
+        let is_down = unsafe { (GetAsyncKeyState(self.vk.0 as i32) as u16) & 0x8000 != 0 };
 
-        if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.id != self.hotkey_id {
-                return None;
+        if is_down && !self.was_pressed {
+            self.was_pressed = true;
+            let now = Instant::now();
+            let is_double = self
+                .last_press
+                .map(|t| now.duration_since(t) < DOUBLE_TAP_WINDOW)
+                .unwrap_or(false);
+            self.last_press = Some(now);
+            if is_double {
+                self.last_press = None;
+                return Some(HotkeyEvent::DoubleTap);
             }
-
-            match event.state {
-                HotKeyState::Pressed => {
-                    let now = Instant::now();
-                    let is_double = self
-                        .last_press
-                        .map(|t| now.duration_since(t) < DOUBLE_TAP_WINDOW)
-                        .unwrap_or(false);
-
-                    self.last_press = Some(now);
-                    self.press_count += 1;
-                    self.is_held = true;
-
-                    if is_double {
-                        self.press_count = 0;
-                        self.last_press = None;
-                        return Some(HotkeyEvent::DoubleTap);
-                    }
-
-                    return Some(HotkeyEvent::HoldStart);
-                }
-                HotKeyState::Released => {
-                    self.is_held = false;
-                    return Some(HotkeyEvent::HoldEnd);
-                }
-            }
+            return Some(HotkeyEvent::HoldStart);
         }
+
+        if !is_down && self.was_pressed {
+            self.was_pressed = false;
+            return Some(HotkeyEvent::HoldEnd);
+        }
+
         None
     }
 
-    pub fn reconfigure(&mut self, choice: HotkeyChoice) -> anyhow::Result<()> {
-        let _ = self.manager.unregister(self.hotkey);
-        let hotkey = HotKey::new(None, choice.to_code());
-        self.hotkey_id = hotkey.id();
-        self.hotkey = hotkey;
+    pub fn reconfigure(&mut self, choice: HotkeyChoice) {
+        self.vk = choice.vk();
         self.choice = choice;
-        self.manager.register(self.hotkey)?;
-        Ok(())
+        self.was_pressed = false;
     }
 
     pub fn choice(&self) -> HotkeyChoice {

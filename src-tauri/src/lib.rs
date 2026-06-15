@@ -132,22 +132,11 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                 }
             };
 
-            let mut last_press: Option<std::time::Instant> = None;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(5));
                 match mgr.poll() {
                     Some(HotkeyEvent::HoldStart) => {
-                        let now = std::time::Instant::now();
-                        let is_double = last_press
-                            .map(|t| now.duration_since(t) < std::time::Duration::from_millis(300))
-                            .unwrap_or(false);
-                        last_press = Some(now);
-
-                        if is_double {
-                            let _ = app_handle.emit("hotkey-double-tap", ());
-                        } else {
-                            let _ = app_handle.emit("hotkey-down", ());
-                        }
+                        let _ = app_handle.emit("hotkey-down", ());
                     }
                     Some(HotkeyEvent::HoldEnd) => {
                         let _ = app_handle.emit("hotkey-up", ());
