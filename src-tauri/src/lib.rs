@@ -471,7 +471,7 @@ fn open_onboarding_window(app: &tauri::AppHandle) {
         tauri::WebviewUrl::App("index.html#onboard".into()),
     )
     .title("Welcome to Hush")
-    .inner_size(480.0, 360.0)
+    .inner_size(480.0, 420.0)
     .resizable(false)
     .center()
     .build();

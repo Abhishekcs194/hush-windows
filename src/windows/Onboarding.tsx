@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
@@ -11,8 +11,8 @@ const HOTKEY_LABELS: Record<string, string> = {
   RightCtrl:  "Right Ctrl",
   RightShift: "Right Shift",
   CapsLock:   "Caps Lock",
-  F13:        "F13",
-  F14:        "F14",
+  F13: "F13",
+  F14: "F14",
 };
 
 interface Settings { hotkey_choice: string }
@@ -28,7 +28,6 @@ export default function Onboarding() {
     invoke<Settings>("get_settings").then((s) => {
       setHotkey(HOTKEY_LABELS[s.hotkey_choice] ?? s.hotkey_choice);
     });
-
     invoke<boolean>("get_transcriber_ready").then((r) => {
       if (r) setProgress({ phase: "ready", percent: 100 });
     });
@@ -44,82 +43,122 @@ export default function Onboarding() {
     win.close();
   };
 
-  return (
-    <div className="w-full h-full flex flex-col items-center justify-center gap-8 px-10 select-none"
-         style={{ background: "rgba(18,18,20,1)" }}>
+  const keys = hotkey.split("+").map((k) => k.trim());
 
-      {/* Logo */}
-      <div className="flex flex-col items-center gap-1">
-        <div className="w-12 h-12 rounded-2xl flex items-center justify-center"
-             style={{ background: "linear-gradient(135deg, #f74a9e 0%, #a855f7 100%)" }}>
+  return (
+    <div className="w-full h-full flex flex-col" style={{ background: "#111113" }}>
+
+      {/* Top brand strip */}
+      <div className="flex flex-col items-center pt-10 pb-8 px-10">
+        <div className="w-14 h-14 rounded-[18px] flex items-center justify-center mb-4 shadow-lg"
+             style={{ background: "linear-gradient(145deg, #f74a9e 0%, #a855f7 100%)" }}>
           <MicIcon />
         </div>
-        <span className="text-white text-xl font-semibold mt-2">Hush</span>
-        <span className="text-zinc-500 text-sm">Voice dictation for Windows</span>
+        <h1 className="text-white text-2xl font-semibold tracking-tight mb-1">Hush</h1>
+        <p className="text-zinc-500 text-sm">AI voice dictation · works in every app</p>
       </div>
 
-      {/* Status area */}
-      <AnimatePresence mode="wait">
-        {!ready ? (
-          <motion.div key="loading"
-            initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
-            className="w-full flex flex-col items-center gap-3">
-            <p className="text-zinc-400 text-sm">
-              {progress.phase === "downloading"
-                ? `Downloading AI model… ${progress.percent}%`
-                : progress.phase === "error"
-                  ? `Error: ${(progress as any).message ?? "Download failed"}`
-                  : "Loading AI model…"}
-            </p>
-            <div className="w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-              <motion.div
-                className="h-full rounded-full"
-                style={{ background: "linear-gradient(90deg, #f74a9e, #a855f7)" }}
-                animate={{ width: progress.phase === "loading" ? "60%" : `${progress.percent}%` }}
-                transition={{ duration: 0.4 }}
-              />
-            </div>
-            <p className="text-zinc-600 text-xs">This only happens once</p>
-          </motion.div>
-        ) : (
-          <motion.div key="ready"
-            initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-            className="w-full flex flex-col items-center gap-6">
+      {/* Divider */}
+      <div className="mx-10 h-px" style={{ background: "rgba(255,255,255,0.06)" }} />
 
-            {/* Hotkey demo */}
-            <div className="flex flex-col items-center gap-2">
-              <p className="text-zinc-400 text-sm">Hold to dictate, release to transcribe</p>
-              <div className="flex items-center gap-1.5">
-                {hotkey.split("+").map((k) => (
-                  <span key={k} className="px-3 py-1.5 rounded-lg text-white text-sm font-mono font-medium"
-                        style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}>
-                    {k.trim()}
-                  </span>
-                ))}
-              </div>
-              <p className="text-zinc-600 text-xs mt-1">
-                Change anytime in Settings → Hotkey
+      {/* Main content */}
+      <div className="flex-1 flex flex-col items-center justify-center px-10 py-8">
+        <AnimatePresence mode="wait">
+          {!ready ? (
+            <motion.div key="loading"
+              initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+              className="w-full flex flex-col items-center gap-3">
+              <p className="text-zinc-300 text-sm font-medium">
+                {progress.phase === "downloading"
+                  ? "Downloading AI model…"
+                  : progress.phase === "error"
+                    ? "Download failed"
+                    : "Loading AI model…"}
               </p>
-            </div>
+              <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.08)" }}>
+                <motion.div className="h-full rounded-full"
+                  style={{ background: "linear-gradient(90deg, #f74a9e, #a855f7)" }}
+                  animate={{
+                    width: progress.phase === "downloading"
+                      ? `${progress.percent}%`
+                      : progress.phase === "loading"
+                        ? "65%"
+                        : "0%"
+                  }}
+                  transition={{ duration: 0.5 }}
+                />
+              </div>
+              <p className="text-zinc-600 text-xs">
+                {progress.phase === "downloading"
+                  ? `${progress.percent}% · ~150 MB · one-time download`
+                  : "Almost ready…"}
+              </p>
+            </motion.div>
+          ) : (
+            <motion.div key="ready"
+              initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
+              className="w-full flex flex-col items-center gap-6">
 
-            <button
-              onClick={handleStart}
-              className="px-6 py-2.5 rounded-full text-white text-sm font-medium transition-opacity hover:opacity-90 active:opacity-75"
-              style={{ background: "linear-gradient(135deg, #f74a9e 0%, #a855f7 100%)" }}
-            >
-              Start using Hush →
-            </button>
-          </motion.div>
+              {/* Hotkey display */}
+              <div className="flex flex-col items-center gap-3">
+                <p className="text-zinc-400 text-sm">Hold to dictate · release to transcribe</p>
+                <div className="flex items-center gap-2">
+                  {keys.map((k, i) => (
+                    <Fragment key={k}>
+                      <kbd
+                        className="px-3.5 py-2 rounded-lg text-white text-sm font-medium"
+                        style={{
+                          background: "rgba(255,255,255,0.07)",
+                          border: "1px solid rgba(255,255,255,0.14)",
+                          boxShadow: "0 2px 0 rgba(0,0,0,0.4)",
+                          fontFamily: "inherit",
+                        }}>
+                        {k}
+                      </kbd>
+                      {i < keys.length - 1 && (
+                        <span className="text-zinc-600 text-sm font-light">+</span>
+                      )}
+                    </Fragment>
+                  ))}
+                </div>
+              </div>
+
+              {/* Description */}
+              <p className="text-zinc-500 text-xs text-center leading-relaxed">
+                Text appears in any app — browser, Word, Slack — right where your cursor is.<br />
+                Change the shortcut anytime in <span className="text-zinc-400">Settings → Hotkey</span>.
+              </p>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Bottom CTA */}
+      <div className="px-10 pb-8 flex flex-col items-center gap-3">
+        <button
+          onClick={handleStart}
+          disabled={!ready}
+          className="w-full py-2.5 rounded-xl text-white text-sm font-semibold
+                     transition-all disabled:opacity-40 hover:brightness-110 active:scale-[0.98]"
+          style={{ background: ready ? "linear-gradient(135deg, #f74a9e 0%, #a855f7 100%)" : "#333" }}
+        >
+          {ready ? "Start using Hush →" : "Setting up…"}
+        </button>
+        {ready && (
+          <p className="text-zinc-600 text-xs">
+            For smarter cleanup, add a Groq API key in{" "}
+            <span className="text-zinc-400">Settings → Account</span>
+          </p>
         )}
-      </AnimatePresence>
+      </div>
     </div>
   );
 }
 
 function MicIcon() {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"
-         strokeLinecap="round" strokeLinejoin="round">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none"
+         stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="9" y="2" width="6" height="12" rx="3" />
       <path d="M5 10a7 7 0 0 0 14 0" />
       <line x1="12" y1="19" x2="12" y2="22" />

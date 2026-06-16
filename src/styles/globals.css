@@ -8,8 +8,12 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  body {
+  html, body, #root {
+    height: 100%;
     margin: 0;
+  }
+
+  body {
     background: transparent;
     color: #f4f4f5;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
