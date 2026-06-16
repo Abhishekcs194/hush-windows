@@ -1,34 +1,71 @@
-const GROQ_WHISPER_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
+use std::sync::Arc;
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+const MODEL_NAME: &str = "ggml-base.en.bin";
+const MODEL_URL: &str =
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
 
 #[derive(Debug, Clone)]
 pub struct TranscriptionSegment {
     pub text: String,
     pub pause_before_secs: f32,
-    pub tokens: Vec<TokenInfo>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TokenInfo {
-    pub text: String,
-    pub probability: f32,
 }
 
 pub struct Transcriber {
-    client: reqwest::Client,
+    ctx: Arc<WhisperContext>,
 }
 
 impl Transcriber {
-    pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .expect("HTTP client"),
+    pub async fn new<F>(on_progress: F) -> anyhow::Result<Self>
+    where
+        F: Fn(&str, u32) + Send + 'static,
+    {
+        let model_path = Self::model_path()?;
+        if !model_path.exists() {
+            log::info!("Downloading Whisper model from HuggingFace…");
+            use tokio::io::AsyncWriteExt;
+            let mut resp = reqwest::get(MODEL_URL).await?;
+            if !resp.status().is_success() {
+                anyhow::bail!("Model download failed: {}", resp.status());
+            }
+            let total = resp.content_length().unwrap_or(148_000_000);
+            let tmp_path = model_path.with_extension("tmp");
+            let mut file = tokio::fs::File::create(&tmp_path).await?;
+            let mut downloaded = 0u64;
+            while let Some(chunk) = resp.chunk().await? {
+                file.write_all(&chunk).await?;
+                downloaded += chunk.len() as u64;
+                let pct = ((downloaded as f64 / total as f64) * 100.0) as u32;
+                on_progress("downloading", pct.min(99));
+            }
+            file.flush().await?;
+            drop(file);
+            tokio::fs::rename(&tmp_path, &model_path).await?;
+            log::info!("Whisper model saved to {:?}", model_path);
         }
-    }
-
-    pub fn is_ready(&self) -> bool {
-        true
+        on_progress("loading", 0);
+        let path_str = model_path.to_string_lossy().to_string();
+        let ctx = tokio::task::spawn_blocking(move || {
+            WhisperContext::new_with_params(&path_str, WhisperContextParameters::default())
+        })
+        .await??;
+        let ctx = Arc::new(ctx);
+        // Warmup: one silent inference so the first real call isn't slow
+        let ctx2 = Arc::clone(&ctx);
+        tokio::task::spawn_blocking(move || {
+            let mut state = ctx2.create_state()?;
+            let mut p = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+            p.set_language(Some("en"));
+            p.set_print_progress(false);
+            p.set_print_special(false);
+            p.set_print_realtime(false);
+            p.set_print_timestamps(false);
+            let _ = state.full(p, &vec![0f32; 16_000]);
+            Ok::<(), anyhow::Error>(())
+        })
+        .await??;
+        log::info!("Whisper model ready");
+        Ok(Self { ctx })
     }
 
     pub async fn transcribe(
@@ -36,42 +73,38 @@ impl Transcriber {
         samples: &[f32],
         sample_rate: u32,
         pause_before_secs: f32,
-        api_key: &str,
     ) -> anyhow::Result<TranscriptionSegment> {
         let samples_16k = resample(samples, sample_rate, 16_000);
-        let wav_bytes = encode_wav_pcm16(&samples_16k, 16_000);
-
-        let part = reqwest::multipart::Part::bytes(wav_bytes)
-            .file_name("audio.wav")
-            .mime_str("audio/wav")?;
-
-        let form = reqwest::multipart::Form::new()
-            .text("model", "whisper-large-v3-turbo")
-            .text("response_format", "text")
-            .text("language", "en")
-            .part("file", part);
-
-        let resp = self
-            .client
-            .post(GROQ_WHISPER_URL)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .multipart(form)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Groq Whisper error {}: {}", status, body);
-        }
-
-        let text = resp.text().await?.trim().to_string();
-        Ok(TranscriptionSegment {
-            text,
-            pause_before_secs,
-            tokens: vec![],
+        let ctx = Arc::clone(&self.ctx);
+        let text = tokio::task::spawn_blocking(move || {
+            let mut state = ctx.create_state()?;
+            let mut p = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+            p.set_language(Some("en"));
+            p.set_print_progress(false);
+            p.set_print_special(false);
+            p.set_print_realtime(false);
+            p.set_print_timestamps(false);
+            p.set_suppress_blank(true);
+            p.set_no_context(true);
+            state.full(p, &samples_16k)?;
+            let n = state.full_n_segments()?;
+            let mut text = String::new();
+            for i in 0..n {
+                text.push_str(&state.full_get_segment_text(i)?);
+            }
+            Ok::<String, anyhow::Error>(text.trim().to_string())
         })
+        .await??;
+        Ok(TranscriptionSegment { text, pause_before_secs })
     }
+
+    fn model_path() -> anyhow::Result<std::path::PathBuf> {
+        let data_dir = dirs::data_dir().ok_or_else(|| anyhow::anyhow!("No AppData"))?;
+        let models_dir = data_dir.join("Hush").join("models");
+        std::fs::create_dir_all(&models_dir)?;
+        Ok(models_dir.join(MODEL_NAME))
+    }
+
 }
 
 fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
@@ -90,31 +123,4 @@ fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
         out.push(s0 + (s1 - s0) * frac);
     }
     out
-}
-
-fn encode_wav_pcm16(samples: &[f32], sample_rate: u32) -> Vec<u8> {
-    let data_size = (samples.len() * 2) as u32;
-    let file_size = 36 + data_size;
-
-    let mut buf = Vec::with_capacity((44 + data_size) as usize);
-    buf.extend_from_slice(b"RIFF");
-    buf.extend_from_slice(&file_size.to_le_bytes());
-    buf.extend_from_slice(b"WAVE");
-
-    buf.extend_from_slice(b"fmt ");
-    buf.extend_from_slice(&16u32.to_le_bytes());
-    buf.extend_from_slice(&1u16.to_le_bytes());          // PCM
-    buf.extend_from_slice(&1u16.to_le_bytes());          // mono
-    buf.extend_from_slice(&sample_rate.to_le_bytes());
-    buf.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
-    buf.extend_from_slice(&2u16.to_le_bytes());          // block align
-    buf.extend_from_slice(&16u16.to_le_bytes());         // bits/sample
-
-    buf.extend_from_slice(b"data");
-    buf.extend_from_slice(&data_size.to_le_bytes());
-    for &s in samples {
-        let s16 = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-        buf.extend_from_slice(&s16.to_le_bytes());
-    }
-    buf
 }

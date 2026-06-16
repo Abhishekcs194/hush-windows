@@ -75,6 +75,6 @@ pub fn get_audio_devices() -> Result<Vec<String>, String> {
 // ── Transcriber status ───────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_transcriber_ready(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.auth.is_signed_in())
+pub async fn get_transcriber_ready(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.transcriber.lock().await.is_some())
 }

@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { emit } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import Waveform from "../components/Waveform";
 import {
   onRecordingStarted,
+  onRecordingCancelled,
   onProcessingStarted,
   onLevelUpdate,
   onDictationComplete,
+  onHotkeyDown,
+  onHotkeyUp,
+  onHotkeyDoubleTap,
 } from "../lib/events";
 
 type Phase = "idle" | "recording" | "processing" | "done";
@@ -14,19 +19,54 @@ type Phase = "idle" | "recording" | "processing" | "done";
 export default function Bubble() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [message, setMessage] = useState("");
+  // Ref mirrors phase for use inside event-listener closures (stale closure prevention).
+  const phaseRef = useRef<Phase>("idle");
   const win = getCurrentWindow();
+
+  const go = (p: Phase) => {
+    phaseRef.current = p;
+    setPhase(p);
+  };
 
   useEffect(() => {
     const unlisten: Array<() => void> = [];
 
+    // Hotkey down → start recording
+    onHotkeyDown(() => {
+      if (phaseRef.current === "idle") {
+        win.show();
+        emit("start-recording");
+      }
+    }).then((u) => unlisten.push(u));
+
+    // Hotkey up → stop recording (hold-to-talk)
+    onHotkeyUp(() => {
+      if (phaseRef.current === "recording") {
+        emit("stop-recording");
+      }
+    }).then((u) => unlisten.push(u));
+
+    // Double-tap → toggle hands-free (start if idle, stop if recording)
+    onHotkeyDoubleTap(() => {
+      if (phaseRef.current === "idle") {
+        win.show();
+        emit("start-recording");
+      } else if (phaseRef.current === "recording") {
+        emit("stop-recording");
+      }
+    }).then((u) => unlisten.push(u));
+
     onRecordingStarted(() => {
-      setPhase("recording");
+      go("recording");
       win.show();
     }).then((u) => unlisten.push(u));
 
-    onProcessingStarted(() => {
-      setPhase("processing");
+    onRecordingCancelled(() => {
+      go("idle");
+      win.hide();
     }).then((u) => unlisten.push(u));
+
+    onProcessingStarted(() => go("processing")).then((u) => unlisten.push(u));
 
     onLevelUpdate((rms: number) => {
       (Waveform as any)._push?.(rms);
@@ -34,9 +74,9 @@ export default function Bubble() {
 
     onDictationComplete((payload) => {
       setMessage(payload.message);
-      setPhase("done");
+      go("done");
       setTimeout(() => {
-        setPhase("idle");
+        go("idle");
         win.hide();
       }, 2000);
     }).then((u) => unlisten.push(u));
@@ -44,9 +84,19 @@ export default function Bubble() {
     return () => unlisten.forEach((u) => u());
   }, []);
 
+  const handleCancel = () => {
+    emit("cancel-recording");
+    go("idle");
+    win.hide();
+  };
+
+  const handleFinish = () => {
+    // Backend emits processing-started which drives the phase transition.
+    emit("stop-recording");
+  };
+
   return (
     <div className="w-full h-full flex items-center justify-center">
-      {/* Pill container */}
       <AnimatePresence mode="wait">
         <motion.div
           key={phase}
@@ -63,26 +113,18 @@ export default function Bubble() {
 
           {phase === "recording" && (
             <>
-              {/* Cancel button */}
               <button
-                onClick={() => {
-                  setPhase("idle");
-                  win.hide();
-                }}
+                onClick={handleCancel}
                 className="absolute left-4 w-7 h-7 rounded-full flex items-center justify-center
                            text-red-400 hover:bg-zinc-700 transition-colors text-sm no-drag"
               >
                 ✕
               </button>
-
-              {/* Waveform */}
               <div className="w-48 h-full flex items-center">
                 <Waveform active={true} />
               </div>
-
-              {/* Finish button */}
               <button
-                onClick={() => setPhase("processing")}
+                onClick={handleFinish}
                 className="absolute right-4 w-7 h-7 rounded-full flex items-center justify-center
                            text-green-400 hover:bg-zinc-700 transition-colors text-sm no-drag"
               >
@@ -94,7 +136,7 @@ export default function Bubble() {
           {phase === "processing" && (
             <div className="flex items-center gap-2">
               <Spinner />
-              <span className="text-zinc-400 text-sm">Polishing…</span>
+              <span className="text-zinc-400 text-sm">Transcribing…</span>
             </div>
           )}
 

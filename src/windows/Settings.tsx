@@ -6,13 +6,14 @@ import {
   saveSettings,
   getAuthState,
   getAudioDevices,
+  getTranscriberReady,
   openSignIn,
   signInWithKey,
   signOut,
   Settings,
   AuthInfo,
 } from "../lib/tauri";
-import { onAuthChanged } from "../lib/events";
+import { onAuthChanged, onModelProgress, ModelProgressPayload } from "../lib/events";
 
 type Tab = "general" | "hotkey" | "account" | "about";
 
@@ -40,20 +41,28 @@ export default function SettingsWindow() {
   const [auth, setAuth] = useState<AuthInfo | null>(null);
   const [devices, setDevices] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
+  const [modelProgress, setModelProgress] = useState<ModelProgressPayload | null>(null);
 
   useEffect(() => {
-    Promise.all([getSettings(), getAuthState(), getAudioDevices()]).then(
-      ([s, a, d]) => {
+    Promise.all([getSettings(), getAuthState(), getAudioDevices(), getTranscriberReady()]).then(
+      ([s, a, d, ready]) => {
         setSettings(s);
         setAuth(a);
         setDevices(d);
+        if (!ready) setModelProgress({ phase: "loading", percent: 0 });
       }
     );
 
-    const unlisten = onAuthChanged((signedIn) => {
+    const unlistenAuth = onAuthChanged((signedIn) => {
       setAuth((prev) => prev ? { ...prev, signed_in: signedIn } : prev);
     });
-    return () => { unlisten.then((u) => u()); };
+    const unlistenModel = onModelProgress((p) => {
+      setModelProgress(p.phase === "ready" ? null : p);
+    });
+    return () => {
+      unlistenAuth.then((u) => u());
+      unlistenModel.then((u) => u());
+    };
   }, []);
 
   const update = (patch: Partial<Settings>) => {
@@ -102,6 +111,47 @@ export default function SettingsWindow() {
 
       {/* Content */}
       <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Model loading banner */}
+        {modelProgress && (
+          <div className="border-b border-border bg-zinc-900 px-6 py-3 flex-shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex justify-between items-baseline mb-1.5">
+                  <span className="text-xs font-medium text-zinc-200">
+                    {modelProgress.phase === "downloading"
+                      ? "Downloading Whisper model…"
+                      : modelProgress.phase === "loading"
+                      ? "Loading Whisper model into memory…"
+                      : modelProgress.phase === "error"
+                      ? "Model failed to load"
+                      : "Initializing…"}
+                  </span>
+                  {modelProgress.phase === "downloading" && (
+                    <span className="text-xs text-zinc-500 ml-2 tabular-nums">
+                      {modelProgress.percent}%
+                    </span>
+                  )}
+                </div>
+                <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
+                  {modelProgress.phase === "error" ? (
+                    <div className="h-full bg-red-500 w-full" />
+                  ) : modelProgress.phase === "downloading" ? (
+                    <div
+                      className="h-full bg-accent transition-all duration-200"
+                      style={{ width: `${modelProgress.percent}%` }}
+                    />
+                  ) : (
+                    <div className="h-full bg-accent/50 animate-pulse w-full" />
+                  )}
+                </div>
+                {modelProgress.phase === "error" && modelProgress.message && (
+                  <p className="text-xs text-red-400 mt-1">{modelProgress.message}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto p-6">
           <motion.div
             key={tab}
@@ -275,13 +325,13 @@ function AccountTab({ auth, onSignOut, onKeySet }: {
         ) : (
           <>
             <p className="text-sm text-zinc-400">
-              Hush uses the Groq API for fast transcription and AI text cleanup.
-              Get a free API key at{" "}
+              Dictation works fully offline — no key needed. Add a free Groq key
+              to enable optional AI text cleanup (Stage 2 polish).{" "}
               <button
                 onClick={() => openSignIn()}
                 className="text-accent hover:underline"
               >
-                console.groq.com/keys
+                Get a free key →
               </button>
             </p>
             <div className="space-y-2">

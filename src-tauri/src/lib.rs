@@ -9,7 +9,7 @@ mod polisher;
 mod state;
 mod transcriber;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::{AtomicI32, Ordering}, Arc, Mutex};
 
 use audio::{AudioCapture, AudioEvent};
 use crossbeam_channel::bounded;
@@ -17,12 +17,21 @@ use hotkey::{HotkeyEvent, HotkeyManager};
 use injector::{InjectionResult, TextInjector};
 use polisher::Polisher;
 use state::{AppState, RecordingState};
+use transcriber::Transcriber;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Listener, Manager,
 };
+
+// Commands sent from event listeners to the recording control thread.
+// The control thread is the sole owner of AudioCapture (cpal::Stream is !Send).
+enum RecordingCmd {
+    Start,
+    Stop,
+    Cancel,
+}
 
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -94,7 +103,7 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
             move |app, event| match event.id.as_ref() {
                 "settings" => open_settings_window(app),
                 "history" => open_history_window(app),
-                "signin" => { let _ = open::that(auth::pair_url()); }
+                "signin" => { let _ = open::that("https://console.groq.com/keys"); }
                 "signout" => {
                     let state = app.state::<AppState>();
                     state.auth.sign_out();
@@ -115,6 +124,30 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
             }
         })
         .build(app)?;
+
+    // ── Load Whisper model in background ──────────────────────────────────
+    {
+        let state = app.state::<AppState>();
+        let tr = Arc::clone(&state.transcriber);
+        let emit_handle = handle.clone();
+        state.rt.spawn(async move {
+            let h = emit_handle.clone();
+            let on_progress = move |phase: &str, pct: u32| {
+                let _ = h.emit("model-progress", serde_json::json!({ "phase": phase, "percent": pct }));
+            };
+            match Transcriber::new(on_progress).await {
+                Ok(t) => {
+                    *tr.lock().await = Some(t);
+                    let _ = emit_handle.emit("model-progress", serde_json::json!({ "phase": "ready", "percent": 100 }));
+                    let _ = emit_handle.emit("transcriber-ready", ());
+                }
+                Err(e) => {
+                    log::error!("Whisper model load failed: {}", e);
+                    let _ = emit_handle.emit("model-progress", serde_json::json!({ "phase": "error", "percent": 0, "message": e.to_string() }));
+                }
+            }
+        });
+    }
 
     // ── Hotkey listener ────────────────────────────────────────────────────
     {
@@ -151,8 +184,6 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
     }
 
     // ── Audio event bridge ─────────────────────────────────────────────────
-    // Listens to Tauri events from the frontend (start/stop recording requests)
-    // and manages the audio capture + transcription pipeline.
     {
         let app_handle = handle.clone();
         let state_ref = app.state::<AppState>();
@@ -166,36 +197,86 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
 
         let (audio_tx, audio_rx) = bounded::<AudioEvent>(256);
 
-        app.listen("start-recording", {
-            let audio_tx = audio_tx.clone();
-            let recording_state = Arc::clone(&recording_state);
-            let app_handle = app_handle.clone();
-            move |_| {
-                let mut rs = recording_state.lock().unwrap();
-                if *rs != RecordingState::Idle {
-                    return;
-                }
-                *rs = RecordingState::Recording;
-                drop(rs);
+        // Commands from event listeners → recording control thread
+        let (cmd_tx, cmd_rx) = bounded::<RecordingCmd>(16);
+        // In-flight transcription counter so RecordingStopped waits for
+        // the last chunk's async task before reading pending_segments.
+        let in_flight = Arc::new(AtomicI32::new(0));
+        let transcription_done = Arc::new(tokio::sync::Notify::new());
 
-                let mut capture = match AudioCapture::new(audio_tx.clone()) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log::error!("Audio capture error: {}", e);
-                        return;
-                    }
-                };
-                if let Err(e) = capture.start() {
-                    log::error!("Audio start error: {}", e);
-                    return;
-                }
-                // Store capture handle — for stop, we use a separate event
-                // (simplified: capture dropped when stop-recording fires)
-                let _ = app_handle.emit("recording-started", ());
-            }
+        // ── Event listeners just forward to the control thread ────────────
+        app.listen("start-recording", {
+            let tx = cmd_tx.clone();
+            move |_| { let _ = tx.try_send(RecordingCmd::Start); }
+        });
+        app.listen("stop-recording", {
+            let tx = cmd_tx.clone();
+            move |_| { let _ = tx.try_send(RecordingCmd::Stop); }
+        });
+        app.listen("cancel-recording", {
+            let tx = cmd_tx.clone();
+            move |_| { let _ = tx.try_send(RecordingCmd::Cancel); }
         });
 
-        // Audio event → Tauri event bridge (background thread)
+        // ── Recording control thread ───────────────────────────────────────
+        // cpal::Stream is !Send so AudioCapture must live on a single thread.
+        {
+            let audio_tx = audio_tx.clone();
+            let recording_state = Arc::clone(&recording_state);
+            let pending_segments = Arc::clone(&pending_segments);
+            let app_handle = app_handle.clone();
+
+            std::thread::spawn(move || {
+                let mut capture: Option<AudioCapture> = None;
+
+                for cmd in cmd_rx {
+                    match cmd {
+                        RecordingCmd::Start => {
+                            if capture.is_some() { continue; }
+                            {
+                                let mut rs = recording_state.lock().unwrap();
+                                if *rs != RecordingState::Idle { continue; }
+                                *rs = RecordingState::Recording;
+                            }
+                            pending_segments.lock().unwrap().clear();
+
+                            let mut cap = match AudioCapture::new(audio_tx.clone()) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    log::error!("Audio capture error: {}", e);
+                                    *recording_state.lock().unwrap() = RecordingState::Idle;
+                                    continue;
+                                }
+                            };
+                            if let Err(e) = cap.start() {
+                                log::error!("Audio start error: {}", e);
+                                *recording_state.lock().unwrap() = RecordingState::Idle;
+                                continue;
+                            }
+                            capture = Some(cap);
+                            let _ = app_handle.emit("recording-started", ());
+                        }
+                        RecordingCmd::Stop => {
+                            if let Some(mut cap) = capture.take() {
+                                // Blocks ~300ms for tail drain, then sends
+                                // AudioEvent::Chunk (flush) + RecordingStopped.
+                                cap.stop();
+                            }
+                        }
+                        RecordingCmd::Cancel => {
+                            // Drop without stop() so RecordingStopped is never
+                            // sent and the bridge thread skips processing.
+                            drop(capture.take());
+                            pending_segments.lock().unwrap().clear();
+                            *recording_state.lock().unwrap() = RecordingState::Idle;
+                            let _ = app_handle.emit("recording-cancelled", ());
+                        }
+                    }
+                }
+            });
+        }
+
+        // ── Audio bridge thread ────────────────────────────────────────────
         let bridge_handle = app_handle.clone();
         let bridge_transcriber = Arc::clone(&transcriber);
         let bridge_auth = Arc::clone(&auth);
@@ -204,6 +285,8 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
         let bridge_segments = Arc::clone(&pending_segments);
         let bridge_recording = Arc::clone(&recording_state);
         let bridge_rt = rt.clone();
+        let bridge_in_flight = Arc::clone(&in_flight);
+        let bridge_done = Arc::clone(&transcription_done);
 
         std::thread::spawn(move || {
             loop {
@@ -216,27 +299,28 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                         *bridge_recording.lock().unwrap() = RecordingState::Processing;
                         let _ = bridge_handle.emit("processing-started", ());
 
-                        // Run polish + inject
-                        let segments = bridge_segments.lock().unwrap().clone();
-                        if segments.is_empty() {
-                            *bridge_recording.lock().unwrap() = RecordingState::Idle;
-                            let _ = bridge_handle.emit("recording-cancelled", ());
-                            continue;
-                        }
-
                         let auth = Arc::clone(&bridge_auth);
                         let history = Arc::clone(&bridge_history);
                         let settings_snap = bridge_settings.lock().unwrap().clone();
                         let emit = bridge_handle.clone();
                         let rec_state = Arc::clone(&bridge_recording);
                         let segs_ref = Arc::clone(&bridge_segments);
+                        let in_flight = Arc::clone(&bridge_in_flight);
+                        let done_notify = Arc::clone(&bridge_done);
 
                         bridge_rt.spawn(async move {
-                            // Transcribe pending audio chunks
-                            // (chunks arrive via AudioEvent::Chunk handled below)
-                            let final_segments = segs_ref.lock().unwrap().clone();
+                            // Wait for any in-flight chunk transcriptions to land
+                            while in_flight.load(Ordering::Relaxed) > 0 {
+                                done_notify.notified().await;
+                            }
 
-                            // Stage 2 polish
+                            let final_segments = segs_ref.lock().unwrap().clone();
+                            if final_segments.is_empty() {
+                                *rec_state.lock().unwrap() = RecordingState::Idle;
+                                let _ = emit.emit("recording-cancelled", ());
+                                return;
+                            }
+
                             let app_ctx = context::capture();
                             let recent: Vec<_> = {
                                 let h = history.lock().unwrap();
@@ -246,7 +330,7 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                                     .collect()
                             };
 
-                            let mut polisher = Polisher::new(auth.token());
+                            let polisher = Polisher::new(auth.token());
                             let text = polisher
                                 .polish(
                                     &final_segments,
@@ -257,8 +341,7 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                                 )
                                 .await;
 
-                            // Inject text
-                            let mut injector = injector::TextInjector::new();
+                            let mut injector = TextInjector::new();
                             let result = injector.inject(&text);
                             let injected = matches!(result, InjectionResult::Success(_));
                             let message = if injected {
@@ -267,18 +350,16 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                                 "Copied — press Ctrl+V".to_string()
                             };
 
-                            // Save to history
                             let raw = final_segments
                                 .iter()
                                 .map(|s| s.text.as_str())
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            let entry = history::HistoryEntry::new(
+                            history.lock().unwrap().push(history::HistoryEntry::new(
                                 text.clone(),
                                 Some(raw),
                                 app_ctx.process_name,
-                            );
-                            history.lock().unwrap().push(entry);
+                            ));
                             segs_ref.lock().unwrap().clear();
 
                             *rec_state.lock().unwrap() = RecordingState::Idle;
@@ -291,16 +372,24 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                     Ok(AudioEvent::Chunk(chunk)) => {
                         let tr = Arc::clone(&bridge_transcriber);
                         let segs = Arc::clone(&bridge_segments);
-                        let auth = Arc::clone(&bridge_auth);
+                        let in_flight = Arc::clone(&bridge_in_flight);
+                        let done_notify = Arc::clone(&bridge_done);
                         let pause = chunk.pause_before_secs;
+                        in_flight.fetch_add(1, Ordering::Relaxed);
                         bridge_rt.spawn(async move {
-                            let Some(key) = auth.token() else { return };
-                            match tr.transcribe(&chunk.samples, chunk.sample_rate, pause, &key).await {
-                                Ok(seg) if !seg.text.is_empty() => {
-                                    segs.lock().unwrap().push(seg);
+                            let guard = tr.lock().await;
+                            if let Some(t) = guard.as_ref() {
+                                match t.transcribe(&chunk.samples, chunk.sample_rate, pause).await {
+                                    Ok(seg) if !seg.text.is_empty() => {
+                                        segs.lock().unwrap().push(seg);
+                                    }
+                                    Err(e) => log::warn!("Transcription error: {}", e),
+                                    _ => {}
                                 }
-                                Err(e) => log::warn!("Transcription error: {}", e),
-                                _ => {}
+                            }
+                            drop(guard);
+                            if in_flight.fetch_sub(1, Ordering::Relaxed) == 1 {
+                                done_notify.notify_waiters();
                             }
                         });
                     }
@@ -312,6 +401,9 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
 
     // ── Create bubble window (hidden, shown when recording starts) ─────────
     create_bubble_window(app)?;
+
+    // Open Settings on every launch so the user can see model loading progress
+    open_settings_window(app.handle());
 
     Ok(())
 }

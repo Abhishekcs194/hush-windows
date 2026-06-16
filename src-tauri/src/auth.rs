@@ -67,12 +67,3 @@ impl Default for AuthStore {
     }
 }
 
-/// Backend URL — reads HUSH_SERVER_URL env var or falls back to localhost for dev
-pub fn backend_url() -> String {
-    std::env::var("HUSH_SERVER_URL")
-        .unwrap_or_else(|_| "http://localhost:3000".to_string())
-}
-
-pub fn pair_url() -> String {
-    format!("{}/pair", backend_url())
-}
