@@ -32,11 +32,12 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      # Cache the default target dir so whisper.cpp compile is cached across runs.
+      # Do NOT override CARGO_TARGET_DIR here — the cache key must match the dir.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
-          cache-targets: false          # target dir is overridden below
+          workspaces: src-tauri -> target
 
       - name: Install CMake
         uses: lukka/get-cmake@latest
@@ -46,24 +47,21 @@ jobs:
 
       - name: Build
         env:
-          CARGO_TARGET_DIR: C:\hush-target
           WHISPER_DONT_GENERATE_BINDINGS: "1"
         run: npm run tauri build
+        working-directory: .
 
       - name: Collect artifacts
         shell: pwsh
         run: |
-          $out = "C:\hush-target\release\bundle"
+          $out = "src-tauri\target\release\bundle"
           $dest = "dist-artifacts"
           New-Item -ItemType Directory -Force $dest | Out-Null
-          # MSI installer
           Get-ChildItem "$out\msi\*.msi" -ErrorAction SilentlyContinue |
             Copy-Item -Destination $dest
-          # NSIS installer (.exe)
           Get-ChildItem "$out\nsis\*.exe" -ErrorAction SilentlyContinue |
             Copy-Item -Destination $dest
-          # Portable exe (copy + zip)
-          $exe = "C:\hush-target\release\hush-windows.exe"
+          $exe = "src-tauri\target\release\hush-windows.exe"
           if (Test-Path $exe) {
             Copy-Item $exe "$dest\hush-windows.exe"
             Compress-Archive -Path $exe -DestinationPath "$dest\hush-windows-portable.zip" -Force
