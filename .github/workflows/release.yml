@@ -5,10 +5,6 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Version tag (e.g. v0.1.0)"
-        required: true
 
 permissions:
   contents: write
@@ -32,8 +28,6 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      # Cache the default target dir so whisper.cpp compile is cached across runs.
-      # Do NOT override CARGO_TARGET_DIR here — the cache key must match the dir.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
@@ -45,43 +39,24 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build
+      # tauri-action installs WiX + NSIS, builds the app, and uploads to the release
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WHISPER_DONT_GENERATE_BINDINGS: "1"
-        run: npm run tauri build
-        working-directory: .
-
-      - name: Collect artifacts
-        shell: pwsh
-        run: |
-          $out = "src-tauri\target\release\bundle"
-          $dest = "dist-artifacts"
-          New-Item -ItemType Directory -Force $dest | Out-Null
-          Get-ChildItem "$out\msi\*.msi" -ErrorAction SilentlyContinue |
-            Copy-Item -Destination $dest
-          Get-ChildItem "$out\nsis\*.exe" -ErrorAction SilentlyContinue |
-            Copy-Item -Destination $dest
-          $exe = "src-tauri\target\release\hush-windows.exe"
-          if (Test-Path $exe) {
-            Copy-Item $exe "$dest\hush-windows.exe"
-            Compress-Archive -Path $exe -DestinationPath "$dest\hush-windows-portable.zip" -Force
-          }
-          Get-ChildItem $dest | Select-Object Name, Length
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name || inputs.tag }}
-          name: Hush ${{ github.ref_name || inputs.tag }}
-          draft: true
-          files: dist-artifacts/*
-          body: |
-            ## Hush ${{ github.ref_name || inputs.tag }}
+          tagName: ${{ github.ref_name }}
+          releaseName: "Hush ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
+          releaseBody: |
+            ## Hush ${{ github.ref_name }}
 
             **Install**: Download and run the `.msi` (recommended) or `.exe` installer.
-            **Portable**: Unzip `hush-windows-portable.zip` and run `hush-windows.exe`.
+            **Portable**: Run `hush-windows.exe` directly — no install needed.
 
             ### First run
-            1. The app downloads its AI speech model (~150 MB) automatically.
+            1. The app downloads its AI speech model (~150 MB) on first launch.
             2. Hold **Ctrl + Space** to start dictating.
-            3. Release to transcribe and inject text at the cursor.
+            3. Release to transcribe and insert text at the cursor.
