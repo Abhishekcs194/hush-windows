@@ -25,14 +25,19 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
 ];
 
 const CLEANUP_LEVELS = ["Off", "Light", "Standard", "Polished"] as const;
-const HOTKEY_CHOICES = ["RightAlt", "RightCtrl", "RightShift", "CapsLock", "F13", "F14"] as const;
+const HOTKEY_CHOICES = [
+  "CtrlSpace", "WinSpace",
+  "RightAlt", "RightCtrl", "RightShift", "CapsLock", "F13", "F14",
+] as const;
 const HOTKEY_LABELS: Record<string, string> = {
-  RightAlt: "Right Alt",
-  RightCtrl: "Right Ctrl",
+  CtrlSpace:  "Ctrl + Space",
+  WinSpace:   "Win + Space",
+  RightAlt:   "Right Alt",
+  RightCtrl:  "Right Ctrl",
   RightShift: "Right Shift",
-  CapsLock: "Caps Lock",
-  F13: "F13",
-  F14: "F14",
+  CapsLock:   "Caps Lock",
+  F13:        "F13",
+  F14:        "F14",
 };
 
 export default function SettingsWindow() {
@@ -246,7 +251,7 @@ function HotkeyTab({ settings, update }: {
     <div className="space-y-6">
       <h2 className="text-base font-semibold">Hotkey</h2>
 
-      <Field label="Dictation Key" hint="The key you hold to start dictating.">
+      <Field label="Dictation Shortcut" hint="Hold to record. Release to transcribe.">
         <Select
           value={settings.hotkey_choice}
           options={HOTKEY_CHOICES.map((v) => ({ value: v, label: HOTKEY_LABELS[v] }))}
