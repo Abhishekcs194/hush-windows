@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
 import Waveform from "../components/Waveform";
@@ -16,7 +15,6 @@ type Phase = "idle" | "recording" | "processing" | "done";
 export default function Bubble() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [message, setMessage] = useState("");
-  const win = getCurrentWindow();
 
   useEffect(() => {
     const unlisten: Array<() => void> = [];
