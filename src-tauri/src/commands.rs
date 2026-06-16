@@ -78,3 +78,12 @@ pub fn get_audio_devices() -> Result<Vec<String>, String> {
 pub async fn get_transcriber_ready(state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.transcriber.lock().await.is_some())
 }
+
+// ── Onboarding ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn mark_setup_complete(state: State<'_, AppState>) -> Result<(), String> {
+    let mut s = state.settings.lock().unwrap();
+    s.setup_complete = true;
+    s.save().map_err(|e| e.to_string())
+}

@@ -14,6 +14,8 @@ pub struct Settings {
     pub hands_free: bool,
     pub user_profile: String,
     pub input_device: Option<String>,
+    #[serde(default)]
+    pub setup_complete: bool,
 }
 
 impl Default for Settings {
@@ -25,6 +27,7 @@ impl Default for Settings {
             hands_free: false,
             user_profile: String::new(),
             input_device: None,
+            setup_complete: false,
         }
     }
 }

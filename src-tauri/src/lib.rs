@@ -61,6 +61,7 @@ pub fn run() {
             commands::open_sign_in,
             commands::get_audio_devices,
             commands::get_transcriber_ready,
+            commands::mark_setup_complete,
         ])
         .setup(|app| {
             setup_app(app)?;
@@ -158,9 +159,12 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
     // ── Hotkey listener ────────────────────────────────────────────────────
     // The hotkey thread sends RecordingCmd directly — bypassing the hidden
     // Bubble webview entirely (hidden WebView2 windows don't process JS events).
+    // It re-reads hotkey_choice from settings every ~1s so changes take effect
+    // without restarting the app.
     {
         let state = app.state::<AppState>();
         let choice = state.settings.lock().unwrap().hotkey_choice;
+        let settings_arc = Arc::clone(&state.settings);
         drop(state);
 
         let app_handle = handle.clone();
@@ -173,9 +177,20 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                     return;
                 }
             };
+            let mut tick: u32 = 0;
 
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(5));
+
+                // Re-read hotkey choice every ~1s (200 × 5ms) so Settings changes
+                // take effect immediately without an app restart.
+                tick = tick.wrapping_add(1);
+                if tick % 200 == 0 {
+                    if let Ok(s) = settings_arc.try_lock() {
+                        mgr.reconfigure(s.hotkey_choice);
+                    }
+                }
+
                 match mgr.poll() {
                     Some(HotkeyEvent::HoldStart) => {
                         let _ = cmd_tx.try_send(RecordingCmd::Start);
@@ -411,8 +426,13 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
     // ── Create bubble window (hidden, shown when recording starts) ─────────
     create_bubble_window(app)?;
 
-    // Open Settings on every launch so the user can see model loading progress
-    open_settings_window(app.handle());
+    // First run → onboarding; subsequent launches → nothing (access via tray)
+    let setup_complete = app.state::<AppState>().settings.lock().unwrap().setup_complete;
+    if setup_complete {
+        // nothing — user knows what to do
+    } else {
+        open_onboarding_window(app.handle());
+    }
 
     Ok(())
 }
@@ -437,6 +457,24 @@ fn create_bubble_window(app: &tauri::App) -> anyhow::Result<()> {
         .build()?;
 
     Ok(())
+}
+
+fn open_onboarding_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("onboard") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    let _ = tauri::WebviewWindowBuilder::new(
+        app,
+        "onboard",
+        tauri::WebviewUrl::App("index.html#onboard".into()),
+    )
+    .title("Welcome to Hush")
+    .inner_size(480.0, 360.0)
+    .resizable(false)
+    .center()
+    .build();
 }
 
 fn open_settings_window(app: &tauri::AppHandle) {
