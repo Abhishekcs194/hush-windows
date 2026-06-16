@@ -35,12 +35,3 @@ export const onModelProgress = (cb: (p: ModelProgressPayload) => void) =>
 
 export const onAuthChanged = (cb: (signedIn: boolean) => void) =>
   listen<boolean>("auth-changed", (e) => cb(e.payload));
-
-export const onHotkeyDown = (cb: () => void) =>
-  listen("hotkey-down", cb);
-
-export const onHotkeyUp = (cb: () => void) =>
-  listen("hotkey-up", cb);
-
-export const onHotkeyDoubleTap = (cb: () => void) =>
-  listen("hotkey-double-tap", cb);

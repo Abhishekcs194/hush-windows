@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
@@ -9,9 +9,6 @@ import {
   onProcessingStarted,
   onLevelUpdate,
   onDictationComplete,
-  onHotkeyDown,
-  onHotkeyUp,
-  onHotkeyDoubleTap,
 } from "../lib/events";
 
 type Phase = "idle" | "recording" | "processing" | "done";
@@ -19,54 +16,18 @@ type Phase = "idle" | "recording" | "processing" | "done";
 export default function Bubble() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [message, setMessage] = useState("");
-  // Ref mirrors phase for use inside event-listener closures (stale closure prevention).
-  const phaseRef = useRef<Phase>("idle");
   const win = getCurrentWindow();
-
-  const go = (p: Phase) => {
-    phaseRef.current = p;
-    setPhase(p);
-  };
 
   useEffect(() => {
     const unlisten: Array<() => void> = [];
 
-    // Hotkey down → start recording
-    onHotkeyDown(() => {
-      if (phaseRef.current === "idle") {
-        win.show();
-        emit("start-recording");
-      }
-    }).then((u) => unlisten.push(u));
+    // Backend shows the window and controls visibility.
+    // Bubble only updates phase for rendering.
+    onRecordingStarted(() => setPhase("recording")).then((u) => unlisten.push(u));
 
-    // Hotkey up → stop recording (hold-to-talk)
-    onHotkeyUp(() => {
-      if (phaseRef.current === "recording") {
-        emit("stop-recording");
-      }
-    }).then((u) => unlisten.push(u));
+    onRecordingCancelled(() => setPhase("idle")).then((u) => unlisten.push(u));
 
-    // Double-tap → toggle hands-free (start if idle, stop if recording)
-    onHotkeyDoubleTap(() => {
-      if (phaseRef.current === "idle") {
-        win.show();
-        emit("start-recording");
-      } else if (phaseRef.current === "recording") {
-        emit("stop-recording");
-      }
-    }).then((u) => unlisten.push(u));
-
-    onRecordingStarted(() => {
-      go("recording");
-      win.show();
-    }).then((u) => unlisten.push(u));
-
-    onRecordingCancelled(() => {
-      go("idle");
-      win.hide();
-    }).then((u) => unlisten.push(u));
-
-    onProcessingStarted(() => go("processing")).then((u) => unlisten.push(u));
+    onProcessingStarted(() => setPhase("processing")).then((u) => unlisten.push(u));
 
     onLevelUpdate((rms: number) => {
       (Waveform as any)._push?.(rms);
@@ -74,11 +35,9 @@ export default function Bubble() {
 
     onDictationComplete((payload) => {
       setMessage(payload.message);
-      go("done");
-      setTimeout(() => {
-        go("idle");
-        win.hide();
-      }, 2000);
+      setPhase("done");
+      // Backend hides the window after 2s; reset phase to idle for next show
+      setTimeout(() => setPhase("idle"), 2100);
     }).then((u) => unlisten.push(u));
 
     return () => unlisten.forEach((u) => u());
@@ -86,12 +45,9 @@ export default function Bubble() {
 
   const handleCancel = () => {
     emit("cancel-recording");
-    go("idle");
-    win.hide();
   };
 
   const handleFinish = () => {
-    // Backend emits processing-started which drives the phase transition.
     emit("stop-recording");
   };
 

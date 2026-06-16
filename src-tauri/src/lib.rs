@@ -9,7 +9,7 @@ mod polisher;
 mod state;
 mod transcriber;
 
-use std::sync::{atomic::{AtomicI32, Ordering}, Arc, Mutex};
+use std::sync::{atomic::{AtomicI32, Ordering}, Arc};
 
 use audio::{AudioCapture, AudioEvent};
 use crossbeam_channel::bounded;
@@ -149,13 +149,22 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
         });
     }
 
+    // ── Shared channels (created here so hotkey thread can hold cmd_tx) ──────
+    let (audio_tx, audio_rx) = bounded::<AudioEvent>(256);
+    let (cmd_tx, cmd_rx) = bounded::<RecordingCmd>(16);
+    let in_flight = Arc::new(AtomicI32::new(0));
+    let transcription_done = Arc::new(tokio::sync::Notify::new());
+
     // ── Hotkey listener ────────────────────────────────────────────────────
+    // The hotkey thread sends RecordingCmd directly — bypassing the hidden
+    // Bubble webview entirely (hidden WebView2 windows don't process JS events).
     {
         let state = app.state::<AppState>();
         let choice = state.settings.lock().unwrap().hotkey_choice;
-        drop(state); // release borrow before moving handle
+        drop(state);
 
         let app_handle = handle.clone();
+        let cmd_tx = cmd_tx.clone();
         std::thread::spawn(move || {
             let mut mgr = match HotkeyManager::new(choice) {
                 Ok(m) => m,
@@ -169,9 +178,11 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                 std::thread::sleep(std::time::Duration::from_millis(5));
                 match mgr.poll() {
                     Some(HotkeyEvent::HoldStart) => {
+                        let _ = cmd_tx.try_send(RecordingCmd::Start);
                         let _ = app_handle.emit("hotkey-down", ());
                     }
                     Some(HotkeyEvent::HoldEnd) => {
+                        let _ = cmd_tx.try_send(RecordingCmd::Stop);
                         let _ = app_handle.emit("hotkey-up", ());
                     }
                     Some(HotkeyEvent::DoubleTap) => {
@@ -195,20 +206,7 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
         let pending_segments = Arc::clone(&state_ref.pending_segments);
         let rt = state_ref.rt.clone();
 
-        let (audio_tx, audio_rx) = bounded::<AudioEvent>(256);
-
-        // Commands from event listeners → recording control thread
-        let (cmd_tx, cmd_rx) = bounded::<RecordingCmd>(16);
-        // In-flight transcription counter so RecordingStopped waits for
-        // the last chunk's async task before reading pending_segments.
-        let in_flight = Arc::new(AtomicI32::new(0));
-        let transcription_done = Arc::new(tokio::sync::Notify::new());
-
-        // ── Event listeners just forward to the control thread ────────────
-        app.listen("start-recording", {
-            let tx = cmd_tx.clone();
-            move |_| { let _ = tx.try_send(RecordingCmd::Start); }
-        });
+        // ✓ button and ✕ button still route through frontend events → cmd_tx
         app.listen("stop-recording", {
             let tx = cmd_tx.clone();
             move |_| { let _ = tx.try_send(RecordingCmd::Stop); }
@@ -254,6 +252,9 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                                 continue;
                             }
                             capture = Some(cap);
+                            if let Some(w) = app_handle.get_webview_window("bubble") {
+                                let _ = w.show();
+                            }
                             let _ = app_handle.emit("recording-started", ());
                         }
                         RecordingCmd::Stop => {
@@ -269,6 +270,9 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                             drop(capture.take());
                             pending_segments.lock().unwrap().clear();
                             *recording_state.lock().unwrap() = RecordingState::Idle;
+                            if let Some(w) = app_handle.get_webview_window("bubble") {
+                                let _ = w.hide();
+                            }
                             let _ = app_handle.emit("recording-cancelled", ());
                         }
                     }
@@ -367,6 +371,11 @@ fn setup_app(app: &mut tauri::App) -> anyhow::Result<()> {
                                 "dictation-complete",
                                 serde_json::json!({ "text": text, "message": message, "injected": injected }),
                             );
+                            // Hide bubble after showing the done message for 2s
+                            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                            if let Some(w) = emit.get_webview_window("bubble") {
+                                let _ = w.hide();
+                            }
                         });
                     }
                     Ok(AudioEvent::Chunk(chunk)) => {
