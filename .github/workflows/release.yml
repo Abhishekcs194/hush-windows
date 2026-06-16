@@ -39,7 +39,25 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # tauri-action installs WiX + NSIS, builds the app, and uploads to the release
+      # Download all crate sources to the registry so we can patch before building.
+      # whisper-rs-sys bundles Linux-generated bindings where whisper_gretype = c_uint;
+      # MSVC requires c_int. We patch the extracted source file here.
+      - name: Fetch Rust dependencies
+        run: cargo fetch --manifest-path src-tauri/Cargo.toml
+
+      - name: Patch whisper-rs-sys bindings for MSVC
+        shell: pwsh
+        run: |
+          $file = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Recurse -Filter "bindings.rs" |
+            Where-Object { $_.FullName -match "whisper-rs-sys" } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $file) { Write-Error "whisper-rs-sys bindings.rs not found"; exit 1 }
+          $content = [System.IO.File]::ReadAllText($file)
+          $patched = $content -replace 'pub type whisper_gretype = ::std::os::raw::c_uint', `
+                                       'pub type whisper_gretype = ::std::os::raw::c_int'
+          [System.IO.File]::WriteAllText($file, $patched)
+          Write-Host "Patched: $file"
+
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0
         env:
